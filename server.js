@@ -244,5 +244,14 @@ app.get('/api/bitcoin-history', async (req, res) => {
   }
 });
 
+
+// Route để giám sát uptime
+app.get('/api/ping', (req, res) => res.json({ status: 'ok' }));
+
+
+
+
+
+
 // Khởi động server
 app.listen(port, () => console.log(`Server chạy trên cổng ${port}`));
