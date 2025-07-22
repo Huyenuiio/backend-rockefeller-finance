@@ -12,11 +12,20 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 // Redis Client
-const redisClient = redis.createClient({
-  url: process.env.REDIS_URL || 'redis://localhost:6379',
-});
-redisClient.on('error', (err) => console.error('Lỗi Redis:', err));
-redisClient.connect();
+let redisClient;
+(async () => {
+  try {
+    redisClient = redis.createClient({
+      url: process.env.REDIS_URL || 'redis://localhost:6379',
+    });
+    redisClient.on('error', (err) => console.error('Lỗi Redis:', err));
+    await redisClient.connect();
+    console.log('Đã kết nối Redis');
+  } catch (error) {
+    console.error('Không thể kết nối Redis:', error);
+    redisClient = null;
+  }
+})();
 
 // Middleware
 app.use(cors());
@@ -34,11 +43,16 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost/rockefeller-fin
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
   password: { type: String, required: true },
+  expenses: [{
+    amount: { type: Number, required: true },
+    category: { type: String, required: true },
+    date: { type: String, default: () => new Date().toLocaleString('vi-VN') },
+  }],
   allocations: {
     essentials: { type: Number, default: 0 },
     savings: { type: Number, default: 0 },
     selfInvestment: { type: Number, default: 0 },
-    charit: { type: Number, default: 0 },
+    charity: { type: Number, default: 0 },
     emergency: { type: Number, default: 0 },
   },
   investmentHistory: [{
@@ -113,6 +127,34 @@ app.post('/api/login', [
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'your_jwt_secret', { expiresIn: '1h' });
     res.json({ token });
+  } catch (error) {
+    res.status(500).json({ error: 'Lỗi server' });
+  }
+});
+
+app.get('/api/expenses', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    res.json(user.expenses);
+  } catch (error) {
+    res.status(500).json({ error: 'Lỗi server' });
+  }
+});
+
+app.post('/api/expenses', authMiddleware, [
+  body('amount').isFloat({ min: 0 }),
+  body('category').isString().notEmpty(),
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+  try {
+    const user = await User.findById(req.user.id);
+    const { amount, category } = req.body;
+    const newExpense = { amount, category, date: new Date().toLocaleString('vi-VN') };
+    user.expenses.push(newExpense);
+    await user.save();
+    res.json(user.expenses);
   } catch (error) {
     res.status(500).json({ error: 'Lỗi server' });
   }
@@ -203,12 +245,16 @@ app.delete('/api/investments/:index', authMiddleware, async (req, res) => {
 
 app.get('/api/bitcoin-price', async (req, res) => {
   try {
-    const cachedPrice = await redisClient.get('bitcoin_price');
-    if (cachedPrice) return res.json({ price: parseFloat(cachedPrice) });
+    if (redisClient) {
+      const cachedPrice = await redisClient.get('bitcoin_price');
+      if (cachedPrice) return res.json({ price: parseFloat(c.cachedPrice) });
+    }
 
     const data = await fetchWithRetry('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
     const price = data.bitcoin.usd;
-    await redisClient.setEx('bitcoin_price', 300, price.toString()); // Cache 5 phút
+    if (redisClient) {
+      await redisClient.setEx('bitcoin_price', 300, price.toString());
+    }
     res.json({ price });
   } catch (error) {
     console.error('Lỗi khi lấy giá Bitcoin:', error);
@@ -218,15 +264,19 @@ app.get('/api/bitcoin-price', async (req, res) => {
 
 app.get('/api/bitcoin-history', async (req, res) => {
   try {
-    const cachedHistory = await redisClient.get('bitcoin_history');
-    if (cachedHistory) return res.json(JSON.parse(cachedHistory));
+    if (redisClient) {
+      const cachedHistory = await redisClient.get('bitcoin_history');
+      if (cachedHistory) return res.json(JSON.parse(cachedHistory));
+    }
 
     const data = await fetchWithRetry('https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=7');
     const prices = data.prices.map(([timestamp, price]) => ({
       date: new Date(timestamp).toISOString().split('T')[0],
       price,
     }));
-    await redisClient.setEx('bitcoin_history', 300, JSON.stringify(prices)); // Cache 5 phút
+    if (redisClient) {
+      await redisClient.setEx('bitcoin_history', 300, JSON.stringify(prices));
+    }
     res.json(prices);
   } catch (error) {
     console.error('Lỗi khi lấy lịch sử giá Bitcoin:', error);
@@ -244,14 +294,7 @@ app.get('/api/bitcoin-history', async (req, res) => {
   }
 });
 
-
-// Route để giám sát uptime
 app.get('/api/ping', (req, res) => res.json({ status: 'ok' }));
-
-
-
-
-
 
 // Khởi động server
 app.listen(port, () => console.log(`Server chạy trên cổng ${port}`));
