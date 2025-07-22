@@ -11,6 +11,12 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 5000;
 
+const bcrypt = require('bcrypt');
+
+
+
+
+
 // Redis Client
 let redisClient;
 (async () => {
@@ -105,10 +111,12 @@ app.post('/api/register', [
     const existingUser = await User.findOne({ username });
     if (existingUser) return res.status(400).json({ error: 'Tên người dùng đã tồn tại' });
 
-    const user = new User({ username, password }); // Thay bằng bcrypt trong sản xuất
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const user = new User({ username, password: hashedPassword });
     await user.save();
     res.status(201).json({ message: 'Đăng ký thành công' });
   } catch (error) {
+    console.error('Register error:', error);
     res.status(500).json({ error: 'Lỗi server' });
   }
 });
@@ -123,7 +131,10 @@ app.post('/api/login', [
   const { username, password } = req.body;
   try {
     const user = await User.findOne({ username });
-    if (!user || user.password !== password) return res.status(401).json({ error: 'Thông tin đăng nhập không hợp lệ' });
+    if (!user) return res.status(401).json({ error: 'Thông tin đăng nhập không hợp lệ' });
+
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) return res.status(401).json({ error: 'Thông tin đăng nhập không hợp lệ' });
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'your_jwt_secret', { expiresIn: '1h' });
     res.json({ token });
@@ -131,6 +142,7 @@ app.post('/api/login', [
     res.status(500).json({ error: 'Lỗi server' });
   }
 });
+
 
 app.get('/api/expenses', authMiddleware, async (req, res) => {
   try {
