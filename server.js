@@ -39,12 +39,9 @@ app.use(helmet());
 app.use(express.json());
 
 // Kết nối MongoDB Atlas
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost/rockefeller-finance', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-}).then(() => console.log('Đã kết nối MongoDB'))
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost/rockefeller-finance')
+  .then(() => console.log('Đã kết nối MongoDB'))
   .catch((err) => console.error('Lỗi kết nối MongoDB:', err));
-
 // Schema người dùng
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
@@ -259,7 +256,7 @@ app.get('/api/bitcoin-price', async (req, res) => {
   try {
     if (redisClient) {
       const cachedPrice = await redisClient.get('bitcoin_price');
-      if (cachedPrice) return res.json({ price: parseFloat(c.cachedPrice) });
+     if (cachedPrice) return res.json({ price: parseFloat(cachedPrice) });
     }
 
     const data = await fetchWithRetry('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
