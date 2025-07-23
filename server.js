@@ -43,6 +43,7 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost/rockefeller-fin
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
   password: { type: String, required: true },
+  initialBudget: { type: Number, default: 0 },
   expenses: [{
     amount: { type: Number, required: true },
     category: { type: String, required: true },
@@ -105,7 +106,7 @@ app.post('/api/register', [
     const existingUser = await User.findOne({ username });
     if (existingUser) return res.status(400).json({ error: 'Tên người dùng đã tồn tại' });
 
-    const user = new User({ username, password }); // Lưu ý: Trong sản xuất, dùng bcrypt
+    const user = new User({ username, password });
     await user.save();
     res.status(201).json({ message: 'Đăng ký thành công' });
   } catch (error) {
@@ -127,9 +128,36 @@ app.post('/api/login', [
     if (!user || user.password !== password) return res.status(401).json({ error: 'Thông tin đăng nhập không hợp lệ' });
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'your_jwt_secret', { expiresIn: '1h' });
-    res.json({ token });
+    res.json({ token, initialBudget: user.initialBudget });
   } catch (error) {
     console.error('Lỗi đăng nhập:', error);
+    res.status(500).json({ error: 'Lỗi server' });
+  }
+});
+
+app.post('/api/initial-budget', authMiddleware, [
+  body('initialBudget').isFloat({ min: 0 }),
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+  try {
+    const user = await User.findById(req.user.id);
+    user.initialBudget = req.body.initialBudget;
+    await user.save();
+    res.json({ initialBudget: user.initialBudget });
+  } catch (error) {
+    console.error('Lỗi cập nhật ngân sách ban đầu:', error);
+    res.status(500).json({ error: 'Lỗi server' });
+  }
+});
+
+app.get('/api/initial-budget', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    res.json({ initialBudget: user.initialBudget });
+  } catch (error) {
+    console.error('Lỗi lấy ngân sách ban đầu:', error);
     res.status(500).json({ error: 'Lỗi server' });
   }
 });
@@ -155,12 +183,16 @@ app.post('/api/expenses', authMiddleware, [
   try {
     const user = await User.findById(req.user.id);
     const { amount, category, date } = req.body;
+    if (amount > user.initialBudget) {
+      return res.status(400).json({ error: 'Số tiền chi tiêu vượt quá ngân sách' });
+    }
     const newExpense = { 
       amount, 
       category, 
       date: date || new Date().toLocaleDateString('vi-VN') 
     };
     user.expenses.push(newExpense);
+    user.initialBudget -= amount;
     await user.save();
     res.json(user.expenses);
   } catch (error) {
@@ -176,6 +208,8 @@ app.delete('/api/expenses/:index', authMiddleware, async (req, res) => {
     if (index < 0 || index >= user.expenses.length) {
       return res.status(400).json({ error: 'Chỉ số chi tiêu không hợp lệ' });
     }
+    const deletedExpense = user.expenses[index];
+    user.initialBudget += deletedExpense.amount;
     user.expenses.splice(index, 1);
     await user.save();
     res.json(user.expenses);
