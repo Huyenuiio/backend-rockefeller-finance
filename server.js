@@ -48,6 +48,8 @@ const userSchema = new mongoose.Schema({
     amount: { type: Number, required: true },
     category: { type: String, required: true },
     date: { type: String, default: () => new Date().toLocaleDateString('vi-VN') },
+    purpose: { type: String, required: true },
+    location: { type: String, required: true },
   }],
   allocations: {
     essentials: { type: Number, default: 0 },
@@ -143,9 +145,17 @@ app.post('/api/initial-budget', authMiddleware, [
 
   try {
     const user = await User.findById(req.user.id);
-    user.initialBudget = req.body.initialBudget;
+    const newBudget = parseFloat(req.body.initialBudget);
+    user.initialBudget += newBudget; // Cộng dồn ngân sách mới
+    user.allocations = {
+      essentials: user.allocations.essentials + newBudget * 0.5,
+      savings: user.allocations.savings + newBudget * 0.2,
+      selfInvestment: user.allocations.selfInvestment + newBudget * 0.15,
+      charity: user.allocations.charity + newBudget * 0.05,
+      emergency: user.allocations.emergency + newBudget * 0.1,
+    };
     await user.save();
-    res.json({ initialBudget: user.initialBudget });
+    res.json({ initialBudget: user.initialBudget, allocations: user.allocations });
   } catch (error) {
     console.error('Lỗi cập nhật ngân sách ban đầu:', error);
     res.status(500).json({ error: 'Lỗi server' });
@@ -175,6 +185,8 @@ app.get('/api/expenses', authMiddleware, async (req, res) => {
 app.post('/api/expenses', authMiddleware, [
   body('amount').isFloat({ min: 0 }),
   body('category').isString().notEmpty(),
+  body('purpose').isString().notEmpty(),
+  body('location').isString().notEmpty(),
   body('date').optional().isString(),
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -182,17 +194,30 @@ app.post('/api/expenses', authMiddleware, [
 
   try {
     const user = await User.findById(req.user.id);
-    const { amount, category, date } = req.body;
-    if (amount > user.initialBudget) {
-      return res.status(400).json({ error: 'Số tiền chi tiêu vượt quá ngân sách' });
+    const { amount, category, purpose, location, date } = req.body;
+    const categoryKey = {
+      'Tiêu dùng thiết yếu': 'essentials',
+      'Tiết kiệm bắt buộc': 'savings',
+      'Đầu tư bản thân': 'selfInvestment',
+      'Từ thiện': 'charity',
+      'Dự phòng linh hoạt': 'emergency',
+    }[category];
+
+    if (!categoryKey) return res.status(400).json({ error: 'Danh mục không hợp lệ' });
+    if (amount > user.allocations[categoryKey]) {
+      return res.status(400).json({ error: `Số tiền vượt quá ngân sách ${category} (${user.allocations[categoryKey]} VND)` });
     }
+
     const newExpense = { 
       amount, 
       category, 
+      purpose, 
+      location, 
       date: date || new Date().toLocaleDateString('vi-VN') 
     };
     user.expenses.push(newExpense);
     user.initialBudget -= amount;
+    user.allocations[categoryKey] -= amount;
     await user.save();
     res.json(user.expenses);
   } catch (error) {
@@ -209,7 +234,15 @@ app.delete('/api/expenses/:index', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Chỉ số chi tiêu không hợp lệ' });
     }
     const deletedExpense = user.expenses[index];
+    const categoryKey = {
+      'Tiêu dùng thiết yếu': 'essentials',
+      'Tiết kiệm bắt buộc': 'savings',
+      'Đầu tư bản thân': 'selfInvestment',
+      'Từ thiện': 'charity',
+      'Dự phòng linh hoạt': 'emergency',
+    }[deletedExpense.category];
     user.initialBudget += deletedExpense.amount;
+    user.allocations[categoryKey] += deletedExpense.amount;
     user.expenses.splice(index, 1);
     await user.save();
     res.json(user.expenses);
