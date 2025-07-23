@@ -11,12 +11,6 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 5000;
 
-const bcrypt = require('bcrypt');
-
-
-
-
-
 // Redis Client
 let redisClient;
 (async () => {
@@ -39,9 +33,12 @@ app.use(helmet());
 app.use(express.json());
 
 // Kết nối MongoDB Atlas
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost/rockefeller-finance')
-  .then(() => console.log('Đã kết nối MongoDB'))
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost/rockefeller-finance', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+}).then(() => console.log('Đã kết nối MongoDB'))
   .catch((err) => console.error('Lỗi kết nối MongoDB:', err));
+
 // Schema người dùng
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
@@ -49,7 +46,7 @@ const userSchema = new mongoose.Schema({
   expenses: [{
     amount: { type: Number, required: true },
     category: { type: String, required: true },
-    date: { type: String, default: () => new Date().toLocaleString('vi-VN') },
+    date: { type: String, default: () => new Date().toLocaleDateString('vi-VN') },
   }],
   allocations: {
     essentials: { type: Number, default: 0 },
@@ -97,7 +94,7 @@ const fetchWithRetry = async (url, retries = 3) => {
 
 // API Routes
 app.post('/api/register', [
-  body('username').isString().notEmpty(),
+  body('username').isString().notEmpty().trim(),
   body('password').isLength({ min: 6 }),
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -108,18 +105,17 @@ app.post('/api/register', [
     const existingUser = await User.findOne({ username });
     if (existingUser) return res.status(400).json({ error: 'Tên người dùng đã tồn tại' });
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const user = new User({ username, password: hashedPassword });
+    const user = new User({ username, password }); // Lưu ý: Trong sản xuất, dùng bcrypt
     await user.save();
     res.status(201).json({ message: 'Đăng ký thành công' });
   } catch (error) {
-    console.error('Register error:', error);
+    console.error('Lỗi đăng ký:', error);
     res.status(500).json({ error: 'Lỗi server' });
   }
 });
 
 app.post('/api/login', [
-  body('username').isString().notEmpty(),
+  body('username').isString().notEmpty().trim(),
   body('password').notEmpty(),
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -128,24 +124,22 @@ app.post('/api/login', [
   const { username, password } = req.body;
   try {
     const user = await User.findOne({ username });
-    if (!user) return res.status(401).json({ error: 'Thông tin đăng nhập không hợp lệ' });
-
-    const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) return res.status(401).json({ error: 'Thông tin đăng nhập không hợp lệ' });
+    if (!user || user.password !== password) return res.status(401).json({ error: 'Thông tin đăng nhập không hợp lệ' });
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'your_jwt_secret', { expiresIn: '1h' });
     res.json({ token });
   } catch (error) {
+    console.error('Lỗi đăng nhập:', error);
     res.status(500).json({ error: 'Lỗi server' });
   }
 });
-
 
 app.get('/api/expenses', authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     res.json(user.expenses);
   } catch (error) {
+    console.error('Lỗi lấy chi tiêu:', error);
     res.status(500).json({ error: 'Lỗi server' });
   }
 });
@@ -153,18 +147,40 @@ app.get('/api/expenses', authMiddleware, async (req, res) => {
 app.post('/api/expenses', authMiddleware, [
   body('amount').isFloat({ min: 0 }),
   body('category').isString().notEmpty(),
+  body('date').optional().isString(),
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
   try {
     const user = await User.findById(req.user.id);
-    const { amount, category } = req.body;
-    const newExpense = { amount, category, date: new Date().toLocaleString('vi-VN') };
+    const { amount, category, date } = req.body;
+    const newExpense = { 
+      amount, 
+      category, 
+      date: date || new Date().toLocaleDateString('vi-VN') 
+    };
     user.expenses.push(newExpense);
     await user.save();
     res.json(user.expenses);
   } catch (error) {
+    console.error('Lỗi thêm chi tiêu:', error);
+    res.status(500).json({ error: 'Lỗi server' });
+  }
+});
+
+app.delete('/api/expenses/:index', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    const index = parseInt(req.params.index);
+    if (index < 0 || index >= user.expenses.length) {
+      return res.status(400).json({ error: 'Chỉ số chi tiêu không hợp lệ' });
+    }
+    user.expenses.splice(index, 1);
+    await user.save();
+    res.json(user.expenses);
+  } catch (error) {
+    console.error('Lỗi xóa chi tiêu:', error);
     res.status(500).json({ error: 'Lỗi server' });
   }
 });
@@ -174,6 +190,7 @@ app.get('/api/allocations', authMiddleware, async (req, res) => {
     const user = await User.findById(req.user.id);
     res.json(user.allocations);
   } catch (error) {
+    console.error('Lỗi lấy phân bổ:', error);
     res.status(500).json({ error: 'Lỗi server' });
   }
 });
@@ -194,6 +211,7 @@ app.post('/api/allocations', authMiddleware, [
     await user.save();
     res.json(user.allocations);
   } catch (error) {
+    console.error('Lỗi cập nhật phân bổ:', error);
     res.status(500).json({ error: 'Lỗi server' });
   }
 });
@@ -203,6 +221,7 @@ app.get('/api/investments', authMiddleware, async (req, res) => {
     const user = await User.findById(req.user.id);
     res.json(user.investmentHistory);
   } catch (error) {
+    console.error('Lỗi lấy đầu tư:', error);
     res.status(500).json({ error: 'Lỗi server' });
   }
 });
@@ -224,15 +243,21 @@ app.post('/api/investments', authMiddleware, [
     if (amount > investmentBudget) {
       return res.status(400).json({ error: `Số tiền vượt quá ngân sách đầu tư (${investmentBudget} VND)` });
     }
-    if (amount / totalPortfolio > 0.1) {
+    if (totalPortfolio > 0 && amount / totalPortfolio > 0.1) {
       return res.status(400).json({ warning: 'Cảnh báo: Đầu tư Bitcoin ETF nên chiếm dưới 10% tổng danh mục' });
     }
 
-    const newInvestment = { amount, date: new Date().toLocaleString('vi-VN'), price, type };
+    const newInvestment = { 
+      amount, 
+      date: new Date().toLocaleDateString('vi-VN'), 
+      price, 
+      type 
+    };
     user.investmentHistory.push(newInvestment);
     await user.save();
     res.json(user.investmentHistory);
   } catch (error) {
+    console.error('Lỗi thêm đầu tư:', error);
     res.status(500).json({ error: 'Lỗi server' });
   }
 });
@@ -248,6 +273,7 @@ app.delete('/api/investments/:index', authMiddleware, async (req, res) => {
     await user.save();
     res.json(user.investmentHistory);
   } catch (error) {
+    console.error('Lỗi xóa đầu tư:', error);
     res.status(500).json({ error: 'Lỗi server' });
   }
 });
@@ -256,7 +282,7 @@ app.get('/api/bitcoin-price', async (req, res) => {
   try {
     if (redisClient) {
       const cachedPrice = await redisClient.get('bitcoin_price');
-     if (cachedPrice) return res.json({ price: parseFloat(cachedPrice) });
+      if (cachedPrice) return res.json({ price: parseFloat(cachedPrice) });
     }
 
     const data = await fetchWithRetry('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
