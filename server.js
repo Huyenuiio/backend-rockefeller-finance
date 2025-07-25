@@ -146,7 +146,7 @@ app.post('/api/initial-budget', authMiddleware, [
   try {
     const user = await User.findById(req.user.id);
     const newBudget = parseFloat(req.body.initialBudget);
-    user.initialBudget += newBudget; // Cộng dồn ngân sách mới
+    user.initialBudget += newBudget;
     user.allocations = {
       essentials: user.allocations.essentials + newBudget * 0.5,
       savings: user.allocations.savings + newBudget * 0.2,
@@ -279,6 +279,36 @@ app.post('/api/allocations', authMiddleware, [
     res.json(user.allocations);
   } catch (error) {
     console.error('Lỗi cập nhật phân bổ:', error);
+    res.status(500).json({ error: 'Lỗi server' });
+  }
+});
+
+app.delete('/api/account', authMiddleware, async (req, res) => {
+  try {
+    await User.findByIdAndDelete(req.user.id);
+    res.json({ message: 'Tài khoản đã được xóa' });
+  } catch (error) {
+    console.error('Lỗi xóa tài khoản:', error);
+    res.status(500).json({ error: 'Lỗi server' });
+  }
+});
+
+app.delete('/api/budget', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    user.initialBudget = 0;
+    user.allocations = {
+      essentials: 0,
+      savings: 0,
+      selfInvestment: 0,
+      charity: 0,
+      emergency: 0,
+    };
+    user.expenses = [];
+    await user.save();
+    res.json({ message: 'Ngân sách đã được đặt lại' });
+  } catch (error) {
+    console.error('Lỗi đặt lại ngân sách:', error);
     res.status(500).json({ error: 'Lỗi server' });
   }
 });
