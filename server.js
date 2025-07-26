@@ -377,23 +377,15 @@ app.delete('/api/investments/:index', authMiddleware, async (req, res) => {
 
 app.get('/api/bitcoin-price', async (req, res) => {
   try {
-    if (redisClient) {
-      const cachedPrice = await redisClient.get('bitcoin_price');
-      if (cachedPrice) return res.json({ price: parseFloat(cachedPrice) });
-    }
-
-    const data = await fetchWithRetry('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
-    const price = data.bitcoin.usd;
-    if (redisClient) {
-      await redisClient.setEx('bitcoin_price', 300, price.toString());
-    }
-    res.json({ price });
+    const response = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd', {
+      timeout: 5000 // Thêm timeout 5s
+    });
+    res.json({ price: response.data.bitcoin.usd });
   } catch (error) {
-    console.error('Lỗi khi lấy giá Bitcoin:', error);
-    res.status(500).json({ error: 'Không thể lấy giá Bitcoin', fallbackPrice: 117783.89 });
+    console.error('Lỗi lấy giá Bitcoin:', error.message);
+    res.status(500).json({ error: 'Lỗi lấy giá Bitcoin' });
   }
 });
-
 app.get('/api/bitcoin-history', async (req, res) => {
   try {
     if (redisClient) {
