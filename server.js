@@ -7,6 +7,8 @@ const axios = require('axios');
 const { body, validationResult } = require('express-validator');
 const redis = require('redis');
 require('dotenv').config();
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -82,15 +84,16 @@ const authMiddleware = (req, res, next) => {
 };
 
 // Retry logic cho API
-const fetchWithRetry = async (url, retries = 3) => {
+const fetchWithRetry = async (url, retries = 3, backoff = 1000) => {
   for (let i = 0; i < retries; i++) {
     try {
-      const response = await axios.get(url);
-      if (response.status !== 200) throw new Error('Lỗi API');
+      const response = await axios.get(url, { timeout: 5000 });
       return response.data;
     } catch (error) {
       if (i === retries - 1) throw error;
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (error.response?.status === 429) {
+        await delay(backoff * (i + 1));
+      }
     }
   }
 };
@@ -376,16 +379,68 @@ app.delete('/api/investments/:index', authMiddleware, async (req, res) => {
 });
 
 app.get('/api/bitcoin-price', async (req, res) => {
+  const fallbackPrice = 117783.89; // Hardcoded fallback as per original code
   try {
-    const response = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd', {
-      timeout: 5000 // Thêm timeout 5s
-    });
-    res.json({ price: response.data.bitcoin.usd });
+    // Check Redis cache
+    let cachedPrice;
+    if (redisClient) {
+      try {
+        cachedPrice = await redisClient.get('bitcoin_price');
+        if (cachedPrice) {
+          return res.json({ price: parseFloat(cachedPrice) });
+        }
+      } catch (redisError) {
+        console.error('Redis error:', redisError.message);
+      }
+    }
+
+    // Try CoinGecko
+    try {
+      const data = await fetchWithRetry('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+      const price = data.bitcoin.usd;
+      if (redisClient) {
+        try {
+          await redisClient.setEx('bitcoin_price', 300, price.toString());
+        } catch (redisError) {
+          console.error('Redis set error:', redisError.message);
+        }
+      }
+      return res.json({ price });
+    } catch (coingeckoError) {
+      console.error('CoinGecko error:', coingeckoError.message);
+
+      // Fallback to CoinMarketCap (requires API key)
+      if (process.env.CMC_API_KEY) {
+        try {
+          const cmcData = await fetchWithRetry(
+            'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol=BTC',
+            {
+              headers: { 'X-CMC_PRO_API_KEY': process.env.CMC_API_KEY }
+            }
+          );
+          const price = cmcData.data.BTC.quote.USD.price;
+          if (redisClient) {
+            try {
+              await redisClient.setEx('bitcoin_price', 300, price.toString());
+            } catch (redisError) {
+              console.error('Redis set error:', redisError.message);
+            }
+          }
+          return res.json({ price });
+        } catch (cmcError) {
+          console.error('CoinMarketCap error:', cmcError.message);
+        }
+      }
+
+      // Use hardcoded fallback price
+      return res.json({ price: fallbackPrice });
+    }
   } catch (error) {
-    console.error('Lỗi lấy giá Bitcoin:', error.message);
-    res.status(500).json({ error: 'Lỗi lấy giá Bitcoin' });
+    console.error('Lỗi khi lấy giá Bitcoin:', error.message);
+    res.status(500).json({ price: fallbackPrice, warning: 'Không thể lấy giá Bitcoin từ API' });
   }
 });
+
 app.get('/api/bitcoin-history', async (req, res) => {
   try {
     if (redisClient) {
