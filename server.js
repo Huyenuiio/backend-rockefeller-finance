@@ -316,10 +316,14 @@ app.delete('/api/budget', authMiddleware, async (req, res) => {
 app.get('/api/investments', authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
-    res.json(user.investmentHistory);
+    if (!user) {
+      console.error('Không tìm thấy user với id:', req.user.id);
+      return res.status(404).json({ error: 'Không tìm thấy người dùng' });
+    }
+    res.json(user.investmentHistory || []);
   } catch (error) {
     console.error('Lỗi lấy đầu tư:', error);
-    res.status(500).json({ error: 'Lỗi server' });
+    res.status(500).json({ error: 'Lỗi server: ' + error.message });
   }
 });
 
@@ -333,6 +337,10 @@ app.post('/api/investments', authMiddleware, [
 
   try {
     const user = await User.findById(req.user.id);
+    if (!user) {
+      console.error('Không tìm thấy user với id:', req.user.id);
+      return res.status(404).json({ error: 'Không tìm thấy người dùng' });
+    }
     const investmentBudget = user.allocations.selfInvestment + user.allocations.emergency;
     const totalPortfolio = Object.values(user.allocations).reduce((sum, val) => sum + val, 0);
     const { amount, price, type } = req.body;
@@ -355,13 +363,17 @@ app.post('/api/investments', authMiddleware, [
     res.json(user.investmentHistory);
   } catch (error) {
     console.error('Lỗi thêm đầu tư:', error);
-    res.status(500).json({ error: 'Lỗi server' });
+    res.status(500).json({ error: 'Lỗi server: ' + error.message });
   }
 });
 
 app.delete('/api/investments/:index', authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
+    if (!user) {
+      console.error('Không tìm thấy user với id:', req.user.id);
+      return res.status(404).json({ error: 'Không tìm thấy người dùng' });
+    }
     const index = parseInt(req.params.index);
     if (index < 0 || index >= user.investmentHistory.length) {
       return res.status(400).json({ error: 'Chỉ số giao dịch không hợp lệ' });
@@ -371,7 +383,7 @@ app.delete('/api/investments/:index', authMiddleware, async (req, res) => {
     res.json(user.investmentHistory);
   } catch (error) {
     console.error('Lỗi xóa đầu tư:', error);
-    res.status(500).json({ error: 'Lỗi server' });
+    res.status(500).json({ error: 'Lỗi server: ' + error.message });
   }
 });
 
@@ -390,8 +402,7 @@ app.get('/api/bitcoin-price', async (req, res) => {
     res.json({ price });
   } catch (error) {
     console.error('Lỗi khi lấy giá Bitcoin:', error);
-    // Trả về status 200 với giá dự phòng và cảnh báo
-    res.json({ price: 117783.89, warning: 'Không thể lấy giá Bitcoin từ API, đang dùng giá dự phòng.' });
+    res.status(500).json({ error: 'Lỗi lấy giá Bitcoin: ' + error.message });
   }
 });
 
@@ -413,17 +424,7 @@ app.get('/api/bitcoin-history', async (req, res) => {
     res.json(prices);
   } catch (error) {
     console.error('Lỗi khi lấy lịch sử giá Bitcoin:', error);
-    const today = new Date();
-    const prices = [];
-    for (let i = 6; i >= 0; i--) {
-      const date = new Date(today);
-      date.setDate(today.getDate() - i);
-      prices.push({
-        date: date.toISOString().split('T')[0],
-        price: 117783.89 * (1 + (Math.random() - 0.5) * 0.1),
-      });
-    }
-    res.json(prices);
+    res.status(500).json({ error: 'Lỗi lấy lịch sử giá Bitcoin: ' + error.message });
   }
 });
 
