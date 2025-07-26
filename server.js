@@ -7,8 +7,6 @@ const axios = require('axios');
 const { body, validationResult } = require('express-validator');
 const redis = require('redis');
 require('dotenv').config();
-const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -40,42 +38,6 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost/rockefeller-fin
   useUnifiedTopology: true,
 }).then(() => console.log('Đã kết nối MongoDB'))
   .catch((err) => console.error('Lỗi kết nối MongoDB:', err));
-
-// fix bitcoin
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-  if (!token) {
-    console.error('No token provided');
-    return res.status(401).json({ error: 'Không có quyền truy cập: Thiếu token' });
-  }
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = { userId: decoded.id };
-    next();
-  } catch (error) {
-    console.error('Token verification failed:', {
-      message: error.message,
-      token,
-    });
-    return res.status(401).json({ error: 'Không có quyền truy cập: Token không hợp lệ hoặc đã hết hạn' });
-  }
-};
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // Schema người dùng
 const userSchema = new mongoose.Schema({
@@ -120,16 +82,15 @@ const authMiddleware = (req, res, next) => {
 };
 
 // Retry logic cho API
-const fetchWithRetry = async (url, retries = 3, backoff = 1000) => {
+const fetchWithRetry = async (url, retries = 3) => {
   for (let i = 0; i < retries; i++) {
     try {
-      const response = await axios.get(url, { timeout: 5000 });
+      const response = await axios.get(url);
+      if (response.status !== 200) throw new Error('Lỗi API');
       return response.data;
     } catch (error) {
       if (i === retries - 1) throw error;
-      if (error.response?.status === 429) {
-        await delay(backoff * (i + 1));
-      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
 };
@@ -362,49 +323,39 @@ app.get('/api/investments', authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/api/investments', authenticateToken, async (req, res) => {
+app.post('/api/investments', authMiddleware, [
+  body('amount').isFloat({ min: 0 }),
+  body('price').isFloat({ min: 0 }),
+  body('type').isString().notEmpty(),
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
   try {
+    const user = await User.findById(req.user.id);
+    const investmentBudget = user.allocations.selfInvestment + user.allocations.emergency;
+    const totalPortfolio = Object.values(user.allocations).reduce((sum, val) => sum + val, 0);
     const { amount, price, type } = req.body;
-    if (!amount || !price || !type) {
-      return res.status(400).json({ error: 'Thiếu thông tin: amount, price, type là bắt buộc' });
+
+    if (amount > investmentBudget) {
+      return res.status(400).json({ error: `Số tiền vượt quá ngân sách đầu tư (${investmentBudget} VND)` });
     }
-    if (isNaN(amount) || amount <= 0) {
-      return res.status(400).json({ error: 'Số tiền phải là số dương' });
-    }
-    if (isNaN(price) || price <= 0) {
-      return res.status(400).json({ error: 'Giá phải là số dương' });
-    }
-    if (!['Bitcoin ETF', 'Vàng', 'Chứng khoán'].includes(type)) {
-      return res.status(400).json({ error: 'Loại đầu tư không hợp lệ' });
+    if (totalPortfolio > 0 && amount / totalPortfolio > 0.1) {
+      return res.status(400).json({ warning: 'Cảnh báo: Đầu tư Bitcoin ETF nên chiếm dưới 10% tổng danh mục' });
     }
 
-    const user = await User.findById(req.user.userId);
-    if (!user) {
-      console.error('User not found:', req.user.userId);
-      return res.status(404).json({ error: 'Không tìm thấy người dùng' });
-    }
-
-    const newInvestment = {
-      amount: parseFloat(amount),
-      price: parseFloat(price),
-      type,
-      date: new Date().toISOString().split('T')[0]
+    const newInvestment = { 
+      amount, 
+      date: new Date().toLocaleDateString('vi-VN'), 
+      price, 
+      type 
     };
-    user.investments.push(newInvestment);
+    user.investmentHistory.push(newInvestment);
     await user.save();
-
-    res.json(user.investments);
+    res.json(user.investmentHistory);
   } catch (error) {
-    console.error('Lỗi thêm đầu tư:', {
-      message: error.message,
-      stack: error.stack,
-      requestBody: req.body,
-      userId: req.user.userId
-    });
-    if (error instanceof mongoose.Error) {
-      return res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' });
-    }
-    res.status(500).json({ error: 'Lỗi server khi thêm đầu tư' });
+    console.error('Lỗi thêm đầu tư:', error);
+    res.status(500).json({ error: 'Lỗi server' });
   }
 });
 
@@ -425,65 +376,21 @@ app.delete('/api/investments/:index', authMiddleware, async (req, res) => {
 });
 
 app.get('/api/bitcoin-price', async (req, res) => {
-  const fallbackPrice = 117783.89; // Hardcoded fallback as per original code
   try {
-    // Check Redis cache
-    let cachedPrice;
     if (redisClient) {
-      try {
-        cachedPrice = await redisClient.get('bitcoin_price');
-        if (cachedPrice) {
-          return res.json({ price: parseFloat(cachedPrice) });
-        }
-      } catch (redisError) {
-        console.error('Redis error:', redisError.message);
-      }
+      const cachedPrice = await redisClient.get('bitcoin_price');
+      if (cachedPrice) return res.json({ price: parseFloat(cachedPrice) });
     }
 
-    // Try CoinGecko
-    try {
-      const data = await fetchWithRetry('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
-      const price = data.bitcoin.usd;
-      if (redisClient) {
-        try {
-          await redisClient.setEx('bitcoin_price', 300, price.toString());
-        } catch (redisError) {
-          console.error('Redis set error:', redisError.message);
-        }
-      }
-      return res.json({ price });
-    } catch (coingeckoError) {
-      console.error('CoinGecko error:', coingeckoError.message);
-
-      // Fallback to CoinMarketCap (requires API key)
-      if (process.env.CMC_API_KEY) {
-        try {
-          const cmcData = await fetchWithRetry(
-            'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol=BTC',
-            {
-              headers: { 'X-CMC_PRO_API_KEY': process.env.CMC_API_KEY }
-            }
-          );
-          const price = cmcData.data.BTC.quote.USD.price;
-          if (redisClient) {
-            try {
-              await redisClient.setEx('bitcoin_price', 300, price.toString());
-            } catch (redisError) {
-              console.error('Redis set error:', redisError.message);
-            }
-          }
-          return res.json({ price });
-        } catch (cmcError) {
-          console.error('CoinMarketCap error:', cmcError.message);
-        }
-      }
-
-      // Use hardcoded fallback price
-      return res.json({ price: fallbackPrice });
+    const data = await fetchWithRetry('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+    const price = data.bitcoin.usd;
+    if (redisClient) {
+      await redisClient.setEx('bitcoin_price', 300, price.toString());
     }
+    res.json({ price });
   } catch (error) {
-    console.error('Lỗi khi lấy giá Bitcoin:', error.message);
-    res.status(500).json({ price: fallbackPrice, warning: 'Không thể lấy giá Bitcoin từ API' });
+    console.error('Lỗi khi lấy giá Bitcoin:', error);
+    res.status(500).json({ error: 'Không thể lấy giá Bitcoin', fallbackPrice: 117783.89 });
   }
 });
 
