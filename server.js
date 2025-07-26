@@ -390,7 +390,8 @@ app.get('/api/bitcoin-price', async (req, res) => {
     res.json({ price });
   } catch (error) {
     console.error('Lỗi khi lấy giá Bitcoin:', error);
-    res.status(500).json({ error: 'Không thể lấy giá Bitcoin', fallbackPrice: 117783.89 });
+    // Trả về status 200 với giá dự phòng và cảnh báo
+    res.json({ price: 117783.89, warning: 'Không thể lấy giá Bitcoin từ API, đang dùng giá dự phòng.' });
   }
 });
 
