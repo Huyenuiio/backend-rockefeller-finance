@@ -28,7 +28,13 @@ let redisClient;
 })();
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'https://rockefeller-finance-frontend.onrender.com'
+  ],
+  credentials: true
+}));
 app.use(helmet());
 app.use(express.json());
 
