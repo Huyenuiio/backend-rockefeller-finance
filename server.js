@@ -63,6 +63,8 @@ const userSchema = new mongoose.Schema({
     date: String,
     price: Number,
     type: String,
+    description: String, // Thêm mô tả
+    detail: Object,      // Thêm chi tiết
   }],
 });
 const User = mongoose.model('User', userSchema);
@@ -327,6 +329,8 @@ app.post('/api/investments', authMiddleware, [
   body('amount').isFloat({ min: 0 }),
   body('price').isFloat({ min: 0 }),
   body('type').isString().notEmpty(),
+  body('description').optional().isString(),
+  body('detail').optional(),
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
@@ -335,23 +339,49 @@ app.post('/api/investments', authMiddleware, [
     const user = await User.findById(req.user.id);
     const investmentBudget = user.allocations.selfInvestment + user.allocations.emergency;
     const totalPortfolio = Object.values(user.allocations).reduce((sum, val) => sum + val, 0);
-    const { amount, price, type } = req.body;
+    const { amount, price, type, description, detail } = req.body;
+
+    // Validate detail theo từng loại
+    if (type === "gold") {
+      if (!detail || !detail.goldType || !detail.weight) {
+        return res.status(400).json({ error: "Vui lòng nhập đầy đủ thông tin vàng (loại, trọng lượng...)" });
+      }
+    }
+    if (type === "bitcoin") {
+      if (!detail || !detail.price || !detail.exchange) {
+        return res.status(400).json({ error: "Vui lòng nhập đầy đủ thông tin Bitcoin (giá, sàn...)" });
+      }
+    }
+    if (type === "selfInvestment") {
+      if (!detail || !detail.content) {
+        return res.status(400).json({ error: "Vui lòng nhập nội dung đầu tư bản thân." });
+      }
+    }
 
     if (amount > investmentBudget) {
       return res.status(400).json({ error: `Số tiền vượt quá ngân sách đầu tư (${investmentBudget} VND)` });
     }
+
+    // Nếu vượt 10% tổng danh mục, trả về warning nhưng vẫn lưu giao dịch
+    let warning = null;
     if (totalPortfolio > 0 && amount / totalPortfolio > 0.1) {
-      return res.status(400).json({ warning: 'Cảnh báo: Đầu tư Bitcoin ETF nên chiếm dưới 10% tổng danh mục' });
+      warning = "Cảnh báo: Đầu tư này chiếm trên 10% tổng danh mục!";
     }
 
-    const newInvestment = { 
-      amount, 
-      date: new Date().toLocaleDateString('vi-VN'), 
-      price, 
-      type 
+    const newInvestment = {
+      amount,
+      date: new Date().toLocaleDateString('vi-VN'),
+      price,
+      type,
+      description,
+      detail,
     };
     user.investmentHistory.push(newInvestment);
     await user.save();
+
+    if (warning) {
+      return res.status(200).json({ warning, investmentHistory: user.investmentHistory });
+    }
     res.json(user.investmentHistory);
   } catch (error) {
     console.error('Lỗi thêm đầu tư:', error);
