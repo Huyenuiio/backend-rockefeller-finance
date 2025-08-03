@@ -64,7 +64,7 @@ const userSchema = new mongoose.Schema({
     price: Number,
     type: String,
     description: String, // Thêm mô tả
-    detail: Object,      // Thêm chi tiết
+    detail: mongoose.Schema.Types.Mixed, // Cho phép lưu mọi object
   }],
 });
 const User = mongoose.model('User', userSchema);
