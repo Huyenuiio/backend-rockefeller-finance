@@ -181,7 +181,6 @@ exports.resetBudget = async (req, res) => {
             charity: 0,
             emergency: 0,
         };
-        user.expenses = [];
         await user.save();
         res.json({ message: 'Ngân sách đã được đặt lại' });
     } catch (error) {
