@@ -246,3 +246,36 @@ exports.deleteInvestment = async (req, res) => {
         res.status(500).json({ error: 'Lỗi server' });
     }
 };
+
+exports.bulkAddExpenses = async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        const { expenses } = req.body;
+        if (!Array.isArray(expenses)) {
+            return res.status(400).json({ error: 'Dữ liệu không hợp lệ' });
+        }
+        const validCategories = ['essentials', 'savings', 'selfInvestment', 'charity', 'emergency'];
+        for (const exp of expenses) {
+            const { amount, category, purpose, location, date } = exp;
+            const parsedAmount = parseFloat(amount);
+            if (isNaN(parsedAmount) || parsedAmount < 0) continue;
+            if (!validCategories.includes(category)) continue;
+
+            const newExpense = {
+                amount: parsedAmount,
+                category,
+                purpose: purpose || '',
+                location: location || '',
+                date: date || new Date().toLocaleDateString('vi-VN')
+            };
+            user.expenses.push(newExpense);
+            user.initialBudget -= parsedAmount;
+            user.allocations[category] -= parsedAmount;
+        }
+        await user.save();
+        res.json(user.expenses);
+    } catch (error) {
+        console.error('Lỗi nhập dữ liệu chi tiêu hàng loạt:', error);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
+};

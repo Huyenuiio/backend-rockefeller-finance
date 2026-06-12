@@ -19,6 +19,7 @@ router.post('/expenses', [
     body('location').isString().notEmpty(),
     body('date').optional().isString(),
 ], userController.addExpense);
+router.post('/expenses/bulk', userController.bulkAddExpenses);
 router.delete('/expenses/:index', userController.deleteExpense);
 
 router.get('/allocations', userController.getAllocations);
