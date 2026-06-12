@@ -29,3 +29,5 @@ app.get('/api/ping', (req, res) => res.json({ status: 'ok' }));
 app.listen(port, () => {
   console.log(`Server chạy trên cổng ${port} (MVC version)`);
 });
+
+// Trigger redeployment to Render
