@@ -8,10 +8,6 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 5000;
 
-// Connect to Databases
-connectDB();
-connectRedis();
-
 // Middleware
 app.use(cors());
 app.use(helmet());
@@ -25,9 +21,22 @@ app.use('/api', require('./routes/bitcoinRoutes'));
 // Health check
 app.get('/api/ping', (req, res) => res.json({ status: 'ok' }));
 
-// Start server
-app.listen(port, () => {
-  console.log(`Server chạy trên cổng ${port} (MVC version)`);
-});
+// Start database and server
+const startServer = async () => {
+  // Connect to Databases
+  await connectDB();
+  connectRedis();
 
-// Trigger redeployment to Render
+  // Run data migration
+  const migrateEmbeddedExpenses = require('./config/migrate');
+  await migrateEmbeddedExpenses();
+
+  // Listen
+  app.listen(port, () => {
+    console.log(`Server chạy trên cổng ${port} (MVC version)`);
+  });
+};
+
+startServer();
+
+// Trigger redeployment to Render

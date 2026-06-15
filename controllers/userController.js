@@ -1,5 +1,35 @@
 const User = require('../models/User');
+const Expense = require('../models/Expense');
+const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
+
+const parseTransactionDate = (dateStr) => {
+    if (!dateStr) return new Date();
+    if (dateStr.includes('-') || dateStr.includes('T')) {
+        const d = new Date(dateStr);
+        if (!isNaN(d.getTime())) return d;
+    }
+    if (dateStr.includes('/')) {
+        const parts = dateStr.trim().split(/[\s,]+/);
+        const dateParts = parts[0].split('/');
+        if (dateParts.length === 3) {
+            const day = parseInt(dateParts[0], 10);
+            const month = parseInt(dateParts[1], 10) - 1;
+            const year = parseInt(dateParts[2], 10);
+            let hour = 0, minute = 0, second = 0;
+            if (parts[1]) {
+                const timeParts = parts[1].split(':');
+                hour = parseInt(timeParts[0], 10) || 0;
+                minute = parseInt(timeParts[1], 10) || 0;
+                second = parseInt(timeParts[2], 10) || 0;
+            }
+            const d = new Date(year, month, day, hour, minute, second);
+            if (!isNaN(d.getTime())) return d;
+        }
+    }
+    const d = new Date(dateStr);
+    return isNaN(d.getTime()) ? new Date() : d;
+};
 
 exports.getInitialBudget = async (req, res) => {
     try {
@@ -36,39 +66,68 @@ exports.updateInitialBudget = async (req, res) => {
 
 exports.getExpenses = async (req, res) => {
     try {
-        const user = await User.findById(req.user.id);
-        if (!user) return res.status(404).json({ error: 'Người dùng không tìm thấy' });
-
-        let expenses = [...user.expenses].reverse();
-
-        // Filtering & Pagination
         const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || expenses.length; // Default to all if not specified for backward compatibility
+        const limit = parseInt(req.query.limit) || 15;
         const search = req.query.search || '';
         const category = req.query.category || '';
+        const startDate = req.query.startDate || '';
+        const endDate = req.query.endDate || '';
+        const minAmount = parseFloat(req.query.minAmount);
+        const maxAmount = parseFloat(req.query.maxAmount);
+
+        // Build search query
+        let query = { userId: req.user.id };
 
         if (search) {
-            expenses = expenses.filter(e =>
-                (e.purpose && e.purpose.toLowerCase().includes(search.toLowerCase())) ||
-                (e.location && e.location.toLowerCase().includes(search.toLowerCase()))
-            );
+            query.$or = [
+                { purpose: { $regex: search, $options: 'i' } },
+                { location: { $regex: search, $options: 'i' } }
+            ];
         }
         if (category) {
-            expenses = expenses.filter(e => e.category === category);
+            query.category = category;
+        }
+        if (startDate || endDate) {
+            query.timestamp = {};
+            if (startDate) {
+                query.timestamp.$gte = new Date(startDate);
+            }
+            if (endDate) {
+                const endD = new Date(endDate);
+                endD.setHours(23, 59, 59, 999);
+                query.timestamp.$lte = endD;
+            }
+        }
+        if (!isNaN(minAmount) || !isNaN(maxAmount)) {
+            query.amount = {};
+            if (!isNaN(minAmount)) {
+                query.amount.$gte = minAmount;
+            }
+            if (!isNaN(maxAmount)) {
+                query.amount.$lte = maxAmount;
+            }
         }
 
-        const total = expenses.length;
-        const totalPages = Math.ceil(total / limit) || 1;
-        const startIndex = (page - 1) * limit;
-        const paginatedExpenses = expenses.slice(startIndex, startIndex + limit);
+        // Fetch total documents and matching records
+        const total = await Expense.countDocuments(query);
+        const expenses = await Expense.find(query)
+            .sort({ timestamp: -1, _id: -1 })
+            .skip((page - 1) * limit)
+            .limit(limit)
+            .lean();
 
-        // Conditional response for backward compatibility
+        // Conditional response for backward compatibility (e.g. if page/limit are not passed, return all)
         if (!req.query.page && !req.query.limit) {
-            return res.json(expenses); // Return full array if no pagination params
+            const allExpenses = await Expense.find({ userId: req.user.id })
+                .sort({ timestamp: -1, _id: -1 })
+                .lean();
+            return res.json(allExpenses);
         }
+
+        const totalPages = Math.ceil(total / limit) || 1;
 
         res.json({
-            expenses: paginatedExpenses,
+            expenses,
             total,
             totalPages,
             currentPage: page
@@ -86,7 +145,6 @@ exports.addExpense = async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
         const { amount, category, purpose, location, date } = req.body;
-        // category expected as key: essentials, savings, selfInvestment, charity, emergency
         const validCategories = ['essentials', 'savings', 'selfInvestment', 'charity', 'emergency'];
 
         if (!validCategories.includes(category)) {
@@ -97,18 +155,24 @@ exports.addExpense = async (req, res) => {
             return res.status(400).json({ error: `Số tiền vượt quá ngân sách ${category} (${user.allocations[categoryKey]} VND)` });
         }
 
-        const newExpense = {
+        const newExpense = new Expense({
+            userId: req.user.id,
             amount,
             category,
             purpose,
             location,
             date: date || new Date().toLocaleDateString('vi-VN')
-        };
-        user.expenses.push(newExpense);
+        });
+        await newExpense.save();
+
         user.initialBudget -= amount;
         user.allocations[categoryKey] -= amount;
         await user.save();
-        res.json(user.expenses);
+
+        const allExpenses = await Expense.find({ userId: req.user.id })
+            .sort({ timestamp: -1, _id: -1 })
+            .lean();
+        res.json(allExpenses);
     } catch (error) {
         console.error('Lỗi thêm chi tiêu:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -118,17 +182,47 @@ exports.addExpense = async (req, res) => {
 exports.deleteExpense = async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
-        const index = parseInt(req.params.index);
-        if (index < 0 || index >= user.expenses.length) {
-            return res.status(400).json({ error: 'Chỉ số chi tiêu không hợp lệ' });
+        const paramId = req.params.index;
+        
+        let deletedExpense = null;
+        
+        // Try to find by ObjectID first
+        if (mongoose.Types.ObjectId.isValid(paramId)) {
+            deletedExpense = await Expense.findOne({ _id: paramId, userId: req.user.id });
         }
-        const deletedExpense = user.expenses[index];
+        
+        // If not found by ObjectID, check if it is a numeric index
+        if (!deletedExpense) {
+            const parsedIndex = parseInt(paramId);
+            if (!isNaN(parsedIndex) && parsedIndex >= 0) {
+                // Fetch user's expenses sorted oldest to newest (ascending)
+                const userExpenses = await Expense.find({ userId: req.user.id }).sort({ timestamp: 1, _id: 1 });
+                if (parsedIndex < userExpenses.length) {
+                    deletedExpense = userExpenses[parsedIndex];
+                }
+            }
+        }
+        
+        if (!deletedExpense) {
+            return res.status(400).json({ error: 'Giao dịch không tồn tại hoặc chỉ số không hợp lệ' });
+        }
+        
         const categoryKey = deletedExpense.category;
+        
+        // Refund budget and allocations
         user.initialBudget += deletedExpense.amount;
-        user.allocations[categoryKey] += deletedExpense.amount;
-        user.expenses.splice(index, 1);
+        if (categoryKey && user.allocations[categoryKey] !== undefined) {
+            user.allocations[categoryKey] += deletedExpense.amount;
+        }
+        
+        // Remove from DB
+        await Expense.findByIdAndDelete(deletedExpense._id);
         await user.save();
-        res.json(user.expenses);
+        
+        const allExpenses = await Expense.find({ userId: req.user.id })
+            .sort({ timestamp: -1, _id: -1 })
+            .lean();
+        res.json(allExpenses);
     } catch (error) {
         console.error('Lỗi xóa chi tiêu:', error);
         res.status(500).json({ error: 'Lỗi server' });
@@ -162,7 +256,10 @@ exports.updateAllocations = async (req, res) => {
 
 exports.deleteAccount = async (req, res) => {
     try {
-        await User.findByIdAndDelete(req.user.id);
+        await Promise.all([
+            User.findByIdAndDelete(req.user.id),
+            Expense.deleteMany({ userId: req.user.id })
+        ]);
         res.json({ message: 'Tài khoản đã được xóa' });
     } catch (error) {
         console.error('Lỗi xóa tài khoản:', error);
@@ -255,25 +352,35 @@ exports.bulkAddExpenses = async (req, res) => {
             return res.status(400).json({ error: 'Dữ liệu không hợp lệ' });
         }
         const validCategories = ['essentials', 'savings', 'selfInvestment', 'charity', 'emergency'];
+        const newExpenses = [];
+        
         for (const exp of expenses) {
             const { amount, category, purpose, location, date } = exp;
             const parsedAmount = parseFloat(amount);
             if (isNaN(parsedAmount) || parsedAmount < 0) continue;
             if (!validCategories.includes(category)) continue;
 
-            const newExpense = {
+            newExpenses.push({
+                userId: req.user.id,
                 amount: parsedAmount,
                 category,
                 purpose: purpose || '',
                 location: location || '',
                 date: date || new Date().toLocaleDateString('vi-VN')
-            };
-            user.expenses.push(newExpense);
+            });
             user.initialBudget -= parsedAmount;
             user.allocations[category] -= parsedAmount;
         }
+        
+        if (newExpenses.length > 0) {
+            await Expense.insertMany(newExpenses);
+        }
         await user.save();
-        res.json(user.expenses);
+        
+        const allExpenses = await Expense.find({ userId: req.user.id })
+            .sort({ timestamp: -1, _id: -1 })
+            .lean();
+        res.json(allExpenses);
     } catch (error) {
         console.error('Lỗi nhập dữ liệu chi tiêu hàng loạt:', error);
         res.status(500).json({ error: 'Lỗi server' });
